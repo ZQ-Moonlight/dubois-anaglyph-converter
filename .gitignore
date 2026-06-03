@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+output/
+ffmpeg*/
+
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.m4v
+*.wav
+*.aac
+
+server.*.log
