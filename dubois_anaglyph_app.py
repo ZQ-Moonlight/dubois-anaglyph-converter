@@ -39,6 +39,13 @@ PHOTO_SEPARATE = "photo_separate"
 PHOTO_FULL_SBS = "photo_full_sbs"
 PHOTO_HALF_SBS = "photo_half_sbs"
 
+SEQUENCE_AUTO = "auto"
+SEQUENCE_MIXED = "mixed"
+SEQUENCE_SEPARATE_FOLDERS = "separate_folders"
+SEQUENCE_MANUAL = "manual"
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+
 APP_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = APP_DIR / "output"
 
@@ -695,6 +702,128 @@ def sequence_key(path):
     return ("name", stem.lower(), stem)
 
 
+def is_image_file(path):
+    return Path(path).suffix.lower() in IMAGE_EXTENSIONS
+
+
+def image_files_in_folder(folder, recursive=False):
+    folder = Path(folder)
+    if not folder.exists():
+        return []
+    iterator = folder.rglob("*") if recursive else folder.glob("*")
+    return sorted(str(path) for path in iterator if path.is_file() and is_image_file(path))
+
+
+def normalize_sequence_base(text):
+    text = text.lower()
+    text = re.sub(r"[^0-9a-z]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text
+
+
+def detect_eye_from_stem(stem):
+    raw = stem.lower()
+    tokens = [token for token in re.split(r"[^0-9a-z]+", raw) if token]
+    left_tokens = {"l", "left", "lefteye", "lefteye", "leftview"}
+    right_tokens = {"r", "right", "righteye", "righteye", "rightview"}
+
+    side = None
+    kept = []
+    for token in tokens:
+        if token in left_tokens:
+            side = "left"
+            continue
+        if token in right_tokens:
+            side = "right"
+            continue
+        kept.append(token)
+    if side:
+        base = "_".join(kept) or raw
+        return side, normalize_sequence_base(base)
+
+    patterns = [
+        (r"^(left|lefteye|leftview)(\d.*)$", "left", 2),
+        (r"^(right|righteye|rightview)(\d.*)$", "right", 2),
+        (r"^l(\d.*)$", "left", 1),
+        (r"^r(\d.*)$", "right", 1),
+        (r"^(.+\d)(left|lefteye|leftview)$", "left", 1),
+        (r"^(.+\d)(right|righteye|rightview)$", "right", 1),
+        (r"^(.+\d)l$", "left", 1),
+        (r"^(.+\d)r$", "right", 1),
+    ]
+    compact = re.sub(r"[^0-9a-z]+", "", raw)
+    for pattern, side_name, base_group in patterns:
+        match = re.match(pattern, compact)
+        if match:
+            return side_name, normalize_sequence_base(match.group(base_group))
+    return None, normalize_sequence_base(raw)
+
+
+def sequence_sort_value(key):
+    text = key[1] if isinstance(key, tuple) else str(key)
+    match = re.search(r"(\d+)(?!.*\d)", text)
+    if match:
+        return ("number", int(match.group(1)), text)
+    return ("name", text.lower(), text)
+
+
+def pretty_sequence_key(key):
+    match = re.search(r"(\d+)(?!.*\d)", str(key))
+    return match.group(1) if match else str(key)
+
+
+def pair_maps(left_map, right_map):
+    shared = sorted(left_map.keys() & right_map.keys(), key=sequence_sort_value)
+    return [(pretty_sequence_key(key), left_map[key], right_map[key]) for key in shared]
+
+
+def discover_mixed_sequence_pairs(folder, recursive=False):
+    left_map = {}
+    right_map = {}
+    for path in image_files_in_folder(folder, recursive=recursive):
+        side, key = detect_eye_from_stem(Path(path).stem)
+        if not side or not key:
+            continue
+        if side == "left":
+            left_map.setdefault(key, path)
+        elif side == "right":
+            right_map.setdefault(key, path)
+    return pair_maps(left_map, right_map)
+
+
+def discover_separate_folder_pairs(left_folder, right_folder, left_pattern="*.*", right_pattern="*.*"):
+    left_files = [path for path in sorted(glob.glob(str(Path(left_folder) / left_pattern))) if is_image_file(path)]
+    right_files = [path for path in sorted(glob.glob(str(Path(right_folder) / right_pattern))) if is_image_file(path)]
+    if not left_files or not right_files:
+        return []
+    left_map = {detect_eye_from_stem(Path(path).stem)[1] or sequence_key(path)[1]: path for path in left_files}
+    right_map = {detect_eye_from_stem(Path(path).stem)[1] or sequence_key(path)[1]: path for path in right_files}
+    pairs = pair_maps(left_map, right_map)
+    if pairs:
+        return pairs
+    count = min(len(left_files), len(right_files))
+    return [(f"{index + 1:04d}", left_files[index], right_files[index]) for index in range(count)]
+
+
+def find_lr_subfolders(folder):
+    folder = Path(folder)
+    if not folder.exists():
+        return "", ""
+    left_names = ("l", "left", "left_eye", "lefteye")
+    right_names = ("r", "right", "right_eye", "righteye")
+    left_folder = ""
+    right_folder = ""
+    for child in folder.iterdir():
+        if not child.is_dir():
+            continue
+        name = normalize_sequence_base(child.name)
+        if not left_folder and name in left_names:
+            left_folder = str(child)
+        if not right_folder and name in right_names:
+            right_folder = str(child)
+    return left_folder, right_folder
+
+
 def discover_sequence_pairs(folder, left_pattern, right_pattern):
     folder = Path(folder)
     left_files = sorted(glob.glob(str(folder / left_pattern)))
@@ -717,6 +846,37 @@ def discover_sequence_pairs(folder, left_pattern, right_pattern):
     for index in range(count):
         pairs.append((f"{index + 1:04d}", left_files[index], right_files[index]))
     return pairs
+
+
+def discover_sequence_pairs_from_settings(settings):
+    mode = settings.get("sequence_mode") or SEQUENCE_AUTO
+    folder = settings.get("sequence_folder") or ""
+    left_folder = settings.get("sequence_left_folder") or ""
+    right_folder = settings.get("sequence_right_folder") or ""
+    left_pattern = settings.get("sequence_left_pattern") or "left_*.*"
+    right_pattern = settings.get("sequence_right_pattern") or "right_*.*"
+
+    if mode in (SEQUENCE_AUTO, SEQUENCE_SEPARATE_FOLDERS) and left_folder and right_folder:
+        pairs = discover_separate_folder_pairs(left_folder, right_folder, left_pattern or "*.*", right_pattern or "*.*")
+        if pairs or mode == SEQUENCE_SEPARATE_FOLDERS:
+            return pairs
+
+    if mode == SEQUENCE_AUTO and folder:
+        auto_left, auto_right = find_lr_subfolders(folder)
+        if auto_left and auto_right:
+            pairs = discover_separate_folder_pairs(auto_left, auto_right, left_pattern or "*.*", right_pattern or "*.*")
+            if pairs:
+                return pairs
+
+    if mode in (SEQUENCE_AUTO, SEQUENCE_MIXED) and folder:
+        pairs = discover_mixed_sequence_pairs(folder)
+        if pairs or mode == SEQUENCE_MIXED:
+            return pairs
+
+    if mode in (SEQUENCE_AUTO, SEQUENCE_MANUAL) and folder:
+        return discover_sequence_pairs(folder, left_pattern, right_pattern)
+
+    return []
 
 
 def safe_stem(text):
@@ -989,11 +1149,7 @@ def convert_video_worker(settings, job):
 
 
 def convert_sequence_worker(settings, job):
-    pairs = discover_sequence_pairs(
-        settings["sequence_folder"],
-        settings.get("sequence_left_pattern") or "left_*.*",
-        settings.get("sequence_right_pattern") or "right_*.*",
-    )
+    pairs = discover_sequence_pairs_from_settings(settings)
     if not pairs:
         raise ValueError("没有找到可配对的左右眼图片。")
     output_dir = normalize_output_path(settings["sequence_output"])
@@ -1053,13 +1209,11 @@ def load_preview_pair(task, settings):
 
     if task == "sequence":
         folder = settings.get("sequence_folder")
-        if not folder:
-            raise ValueError("请选择图片序列文件夹。")
-        pairs = discover_sequence_pairs(
-            folder,
-            settings.get("sequence_left_pattern") or "left_*.*",
-            settings.get("sequence_right_pattern") or "right_*.*",
-        )
+        left_folder = settings.get("sequence_left_folder")
+        right_folder = settings.get("sequence_right_folder")
+        if not folder and not (left_folder and right_folder):
+            raise ValueError("请选择图片序列文件夹，或分别选择 L/R 文件夹。")
+        pairs = discover_sequence_pairs_from_settings(settings)
         if not pairs:
             raise ValueError("没有找到可配对的左右眼图片。")
         index = int(round((percent / 100.0) * (len(pairs) - 1)))
@@ -1096,8 +1250,12 @@ def validate_start_payload(task, settings):
         return convert_video_worker
 
     if task == "sequence":
-        if not settings.get("sequence_folder") or not settings.get("sequence_output"):
-            raise ValueError("请选择输入文件夹和输出文件夹。")
+        if not settings.get("sequence_output"):
+            raise ValueError("请选择输出文件夹。")
+        if not settings.get("sequence_folder") and not (
+            settings.get("sequence_left_folder") and settings.get("sequence_right_folder")
+        ):
+            raise ValueError("请选择图片序列文件夹，或分别选择 L/R 文件夹。")
         return convert_sequence_worker
 
     if task == "photo":
@@ -1704,9 +1862,33 @@ INDEX_HTML = r"""<!doctype html>
         <div class="tab-panel" id="tab-sequence">
           <p class="section-title">输入与输出</p>
           <div class="grid">
-            <label for="sequenceFolder">输入文件夹</label>
+            <label for="sequenceMode">识别方式</label>
+            <select id="sequenceMode">
+              <option value="auto">自动识别</option>
+              <option value="mixed">混合文件夹，例如 0001_L / 0001_R</option>
+              <option value="separate_folders">左右眼分开文件夹，例如 L / R</option>
+              <option value="manual">手动通配符</option>
+            </select>
+            <span></span>
+          </div>
+          <div class="mode-group active" id="sequenceMixedGroup">
+          <div class="grid">
+            <label for="sequenceFolder">混合/根文件夹</label>
             <input id="sequenceFolder" type="text">
             <button data-pick="folder" data-target="sequenceFolder">浏览</button>
+          </div>
+          </div>
+          <div class="mode-group" id="sequenceSeparateGroup">
+          <div class="grid">
+            <label for="sequenceLeftFolder">左眼文件夹</label>
+            <input id="sequenceLeftFolder" type="text">
+            <button data-pick="folder" data-target="sequenceLeftFolder">浏览</button>
+          </div>
+          <div class="grid">
+            <label for="sequenceRightFolder">右眼文件夹</label>
+            <input id="sequenceRightFolder" type="text">
+            <button data-pick="folder" data-target="sequenceRightFolder">浏览</button>
+          </div>
           </div>
           <div class="grid">
             <label for="sequenceOutput">输出文件夹</label>
@@ -1714,10 +1896,10 @@ INDEX_HTML = r"""<!doctype html>
             <button data-pick="folder" data-target="sequenceOutput">浏览</button>
           </div>
           <div class="compact-row">
-            <label for="sequenceLeftPattern">左眼通配符</label>
-            <input id="sequenceLeftPattern" type="text" value="left_*.png">
-            <label for="sequenceRightPattern">右眼通配符</label>
-            <input id="sequenceRightPattern" type="text" value="right_*.png">
+            <label for="sequenceLeftPattern">左眼过滤</label>
+            <input id="sequenceLeftPattern" type="text" value="*.*">
+            <label for="sequenceRightPattern">右眼过滤</label>
+            <input id="sequenceRightPattern" type="text" value="*.*">
             <select id="sequenceExt">
               <option value=".png">PNG</option>
               <option value=".jpg">JPG</option>
@@ -1961,7 +2143,10 @@ INDEX_HTML = r"""<!doctype html>
         video_right: $("videoRight").value.trim(),
         video_sbs: $("videoSbsPath").value.trim(),
         video_output: $("videoOutput").value.trim(),
+        sequence_mode: $("sequenceMode").value,
         sequence_folder: $("sequenceFolder").value.trim(),
+        sequence_left_folder: $("sequenceLeftFolder").value.trim(),
+        sequence_right_folder: $("sequenceRightFolder").value.trim(),
         sequence_output: $("sequenceOutput").value.trim(),
         sequence_left_pattern: $("sequenceLeftPattern").value.trim(),
         sequence_right_pattern: $("sequenceRightPattern").value.trim(),
@@ -2073,6 +2258,10 @@ INDEX_HTML = r"""<!doctype html>
       try {
         const result = await apiJson("/api/sequence-count", {settings: collectSettings()});
         $("progressText").textContent = `找到 ${result.count} 组图片`;
+        if (result.sample && result.sample.length) {
+          const lines = result.sample.map((item) => `${item.key}: ${item.left} | ${item.right}`);
+          $("log").textContent = `序列配对预览：\n${lines.join("\n")}`;
+        }
         schedulePreview();
       } catch (error) {
         alert(error.message);
@@ -2186,6 +2375,14 @@ INDEX_HTML = r"""<!doctype html>
       $("photoSbs").classList.toggle("active", !photoSeparate);
     }
 
+    function refreshSequenceModeGroups() {
+      const mode = $("sequenceMode").value;
+      const showMixed = mode === "auto" || mode === "mixed" || mode === "manual";
+      const showSeparate = mode === "auto" || mode === "separate_folders";
+      $("sequenceMixedGroup").classList.toggle("active", showMixed);
+      $("sequenceSeparateGroup").classList.toggle("active", showSeparate);
+    }
+
     document.querySelectorAll(".tab-button").forEach((button) => {
       button.addEventListener("click", () => switchTab(button.dataset.tab));
     });
@@ -2201,6 +2398,7 @@ INDEX_HTML = r"""<!doctype html>
       $(id).addEventListener("change", refreshMediaInfo);
     });
     $("photoMode").addEventListener("change", refreshModeGroups);
+    $("sequenceMode").addEventListener("change", () => { refreshSequenceModeGroups(); schedulePreview(); });
     $("trimEdges").addEventListener("change", schedulePreview);
     $("linearizeSrgb").addEventListener("change", schedulePreview);
     $("swapEyes").addEventListener("change", schedulePreview);
@@ -2235,6 +2433,7 @@ INDEX_HTML = r"""<!doctype html>
     syncPair("cyanGain", "cyanGainNum", 0);
     setReadouts();
     refreshModeGroups();
+    refreshSequenceModeGroups();
     refreshHardware();
     refreshMediaInfo();
     pollStatus();
@@ -2345,14 +2544,14 @@ class AppHandler(BaseHTTPRequestHandler):
     def handle_sequence_count(self):
         payload = self.read_json()
         settings = payload.get("settings") or {}
-        pairs = discover_sequence_pairs(
-            settings.get("sequence_folder") or "",
-            settings.get("sequence_left_pattern") or "left_*.*",
-            settings.get("sequence_right_pattern") or "right_*.*",
-        )
+        pairs = discover_sequence_pairs_from_settings(settings)
         if not pairs:
             raise ValueError("没有找到可配对的左右眼图片。")
-        self.send_json({"ok": True, "count": len(pairs)})
+        sample = [
+            {"key": key, "left": str(left), "right": str(right)}
+            for key, left, right in pairs[:5]
+        ]
+        self.send_json({"ok": True, "count": len(pairs), "sample": sample})
 
     def handle_media_info(self):
         payload = self.read_json()
