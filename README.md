@@ -14,11 +14,11 @@ python dubois_anaglyph_app.py
 
 ## 输出
 
-默认输出到当前目录下的 `output` 文件夹：
+默认输出到当前目录下的 `output` 文件夹。界面里的输出路径是“基准名”，每次导出都会自动追加时间戳，避免覆盖旧结果：
 
-- 视频：`output\anaglyph_output.mp4`
-- 图片序列：`output\anaglyph_sequence`
-- 单张照片：`output\anaglyph_photo.png`
+- 视频：`output\anaglyph_output_20260609_153012.mp4`
+- 图片序列：`output\anaglyph_sequence_20260609_153012`
+- 单张照片：`output\anaglyph_photo_20260609_153012.png`
 
 界面里每个模式都有“打开输出文件夹”按钮。
 

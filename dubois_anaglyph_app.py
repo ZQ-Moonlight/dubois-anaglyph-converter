@@ -105,6 +105,35 @@ def normalize_output_path(path):
     return output
 
 
+def unique_run_stamp():
+    return time.strftime("%Y%m%d_%H%M%S")
+
+
+def unique_output_file(path, stamp=None):
+    path = normalize_output_path(path)
+    stamp = stamp or unique_run_stamp()
+    suffix = path.suffix or ".out"
+    stem = path.stem or "output"
+    candidate = path.with_name(f"{stem}_{stamp}{suffix}")
+    index = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{stem}_{stamp}_{index:02d}{suffix}")
+        index += 1
+    return candidate
+
+
+def unique_output_dir(path, stamp=None):
+    path = normalize_output_path(path)
+    stamp = stamp or unique_run_stamp()
+    base = path.with_name(f"{path.name}_{stamp}")
+    candidate = base
+    index = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}_{stamp}_{index:02d}")
+        index += 1
+    return candidate
+
+
 def clamp_float(value, default, minimum=None, maximum=None):
     try:
         number = float(value)
@@ -1060,8 +1089,9 @@ def prepare_video_output(settings, output):
 
 def convert_video_worker(settings, job):
     mode = settings["video_mode"]
-    output = normalize_output_path(settings["video_output"])
+    output = unique_output_file(settings["video_output"])
     output.parent.mkdir(parents=True, exist_ok=True)
+    job.log(f"实际输出视频：{output}")
     video_output, needs_audio_mux, audio_source = prepare_video_output(settings, output)
     backend = resolve_backend(settings, job)
     job.log(f"处理后端：{'Torch CUDA' if backend == 'torch_cuda' else 'CPU / NumPy'}。")
@@ -1152,8 +1182,9 @@ def convert_sequence_worker(settings, job):
     pairs = discover_sequence_pairs_from_settings(settings)
     if not pairs:
         raise ValueError("没有找到可配对的左右眼图片。")
-    output_dir = normalize_output_path(settings["sequence_output"])
+    output_dir = unique_output_dir(settings["sequence_output"])
     output_dir.mkdir(parents=True, exist_ok=True)
+    job.log(f"实际输出文件夹：{output_dir}")
     ext = settings.get("sequence_ext") or ".png"
     if not ext.startswith("."):
         ext = "." + ext
@@ -1184,7 +1215,7 @@ def convert_photo_worker(settings, job):
     backend = resolve_backend(settings, job)
     job.log(f"处理后端：{'Torch CUDA' if backend == 'torch_cuda' else 'CPU / NumPy'}。")
     result = process_anaglyph(left, right, settings, job, backend)
-    output = normalize_output_path(settings["photo_output"])
+    output = unique_output_file(settings["photo_output"])
     write_image(output, result)
     job.set_progress(100.0, "单张照片转换完成")
     job.log(f"照片输出：{output}")
@@ -1848,7 +1879,7 @@ INDEX_HTML = r"""<!doctype html>
             </div>
           </div>
           <div class="grid">
-            <label for="videoOutput">输出视频</label>
+            <label for="videoOutput">输出视频基准</label>
             <input id="videoOutput" type="text" value="output\\anaglyph_output.mp4">
             <button data-pick="save_video" data-target="videoOutput">浏览</button>
           </div>
@@ -1857,6 +1888,7 @@ INDEX_HTML = r"""<!doctype html>
             <button class="primary" id="startVideo">开始转换视频</button>
             <button id="openVideoOutput">打开输出文件夹</button>
           </div>
+          <div class="badge">每次导出都会自动追加时间戳，避免覆盖旧文件。</div>
         </div>
 
         <div class="tab-panel" id="tab-sequence">
@@ -1891,7 +1923,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           </div>
           <div class="grid">
-            <label for="sequenceOutput">输出文件夹</label>
+            <label for="sequenceOutput">输出文件夹基准</label>
             <input id="sequenceOutput" type="text" value="output\\anaglyph_sequence">
             <button data-pick="folder" data-target="sequenceOutput">浏览</button>
           </div>
@@ -1912,6 +1944,7 @@ INDEX_HTML = r"""<!doctype html>
             <button class="primary" id="startSequence">开始转换序列</button>
             <button id="openSequenceOutput">打开输出文件夹</button>
           </div>
+          <div class="badge">每次导出都会创建独立序列文件夹，避免覆盖旧序列。</div>
         </div>
 
         <div class="tab-panel" id="tab-photo">
@@ -1945,7 +1978,7 @@ INDEX_HTML = r"""<!doctype html>
             </div>
           </div>
           <div class="grid">
-            <label for="photoOutput">输出照片</label>
+            <label for="photoOutput">输出照片基准</label>
             <input id="photoOutput" type="text" value="output\\anaglyph_photo.png">
             <button data-pick="save_image" data-target="photoOutput">浏览</button>
           </div>
@@ -1954,6 +1987,7 @@ INDEX_HTML = r"""<!doctype html>
             <button class="primary" id="startPhoto">转换单张照片</button>
             <button id="openPhotoOutput">打开输出文件夹</button>
           </div>
+          <div class="badge">每次导出都会自动追加时间戳，避免覆盖旧照片。</div>
         </div>
 
         <div class="advanced">
