@@ -1,4 +1,4 @@
-# Dubois 红青立体转换器
+# Dubois Anaglyph Converter
 
 本工具把左右眼视频、SBS 视频、图片序列或单张立体照片转换为红青立体画面。双击启动后会打开本地浏览器界面，所有转换都在本机 Python/OpenCV 后台完成。
 
@@ -19,6 +19,7 @@ python dubois_anaglyph_app.py
 - 视频：`output\anaglyph_output_20260609_153012.mp4`
 - 图片序列：`output\anaglyph_sequence_20260609_153012`
 - 单张照片：`output\anaglyph_photo_20260609_153012.png`
+- 序列帧视频：`output\sequence_video_20260610_123142.mp4`
 
 界面里每个模式都有“打开输出文件夹”按钮。
 
@@ -29,13 +30,11 @@ python dubois_anaglyph_app.py
   - 支持 Full SBS 视频。
   - 支持 Half SBS 视频，会先横向拉伸回完整左右眼画面。
   - 预览滑块按视频时间轴显示，读数为当前时间 / 总时长。
-  - 如果检测到 FFmpeg，会自动把原视频音轨复用到最终输出；左右眼独立视频可选择音频来源。
+  - 如果检测到 FFmpeg，会自动把原视频音轨复用到最终输出。
 - 图片序列模式
   - 支持自动识别、混合文件夹、左右眼分开文件夹、手动通配符。
-  - 混合文件夹可自动配对 `0001_L.png` / `0001_R.png`、`0001-left.png` / `0001-right.png`、`left_0001.png` / `right_0001.png` 等命名。
+  - 自动配对 `0001_L.png` / `0001_R.png`、`0001-left.png` / `0001-right.png`、`left_0001.png` / `right_0001.png` 等命名。
   - 如果根目录里有 `L` 和 `R` 子文件夹，自动模式会优先按左右眼分开文件夹处理。
-  - 如果左右眼已经分开在两个目录，可以分别选择左眼文件夹和右眼文件夹。
-  - 手动通配符仍然可用，例如 `left_*.png` 和 `right_*.png`。
 - 序列帧转视频模式
   - 选择一个普通图片序列文件夹即可合成视频。
   - 支持通配符过滤，例如 `*.png`、`frame_*.jpg`。
@@ -47,7 +46,7 @@ python dubois_anaglyph_app.py
   - 支持 Full SBS / Half SBS 立体照片。
 - 硬件加速
   - 支持“自动判断 / 强制 CUDA / 强制 CPU”。
-  - 当前机器检测到 Torch CUDA 时会优先使用 GPU 做颜色矩阵与调节计算。
+  - 检测到 Torch CUDA 时会优先使用 GPU 做颜色矩阵与调节计算。
   - 如果 CUDA 不可用或失败，会自动回退 CPU。
 
 ## 高级调节
@@ -72,7 +71,12 @@ python dubois_anaglyph_app.py
 [-0.0152, -0.0206, -0.0055, -0.0722, -0.1130,  1.2264]
 ```
 
-## 注意
+## FFmpeg
 
-- 音频合并需要系统能找到 `ffmpeg.exe`。如果没有 FFmpeg，程序仍会输出无声视频，并在日志中提示。
-- 可以把 FFmpeg 放到系统 PATH，也可以放到本工具目录下的 `ffmpeg\bin\ffmpeg.exe`，或使用 `ffmpeg-版本号-essentials_build\bin\ffmpeg.exe` 这类解压结构。
+音频合并需要程序能找到 `ffmpeg.exe`。可以使用以下任一方式：
+
+- 把 FFmpeg 加入系统 PATH。
+- 放到工具目录下的 `ffmpeg\bin\ffmpeg.exe`。
+- 使用 `ffmpeg-版本号-essentials_build\bin\ffmpeg.exe` 这类解压结构。
+
+如果没有 FFmpeg，程序仍会输出无声视频，并在日志中提示。

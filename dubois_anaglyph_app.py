@@ -46,7 +46,7 @@ SEQUENCE_MANUAL = "manual"
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 
-APP_DIR = Path(__file__).resolve().parent
+APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 OUTPUT_DIR = APP_DIR / "output"
 
 _TORCH_MODULE = None
