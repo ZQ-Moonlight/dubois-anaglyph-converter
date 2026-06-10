@@ -796,6 +796,12 @@ def sequence_sort_value(key):
     return ("name", text.lower(), text)
 
 
+def natural_sort_key(path):
+    name = Path(path).name.lower()
+    parts = re.split(r"(\d+)", name)
+    return [int(part) if part.isdigit() else part for part in parts]
+
+
 def pretty_sequence_key(key):
     match = re.search(r"(\d+)(?!.*\d)", str(key))
     return match.group(1) if match else str(key)
@@ -906,6 +912,18 @@ def discover_sequence_pairs_from_settings(settings):
         return discover_sequence_pairs(folder, left_pattern, right_pattern)
 
     return []
+
+
+def discover_frame_sequence_files(folder, pattern="*.*"):
+    folder = Path(folder)
+    if not folder.exists():
+        return []
+    files = [
+        path
+        for path in glob.glob(str(folder / (pattern or "*.*")))
+        if Path(path).is_file() and is_image_file(path)
+    ]
+    return sorted(files, key=natural_sort_key)
 
 
 def safe_stem(text):
@@ -1221,6 +1239,53 @@ def convert_photo_worker(settings, job):
     job.log(f"照片输出：{output}")
 
 
+def convert_frames_video_worker(settings, job):
+    folder = settings.get("frames_folder") or ""
+    pattern = settings.get("frames_pattern") or "*.*"
+    files = discover_frame_sequence_files(folder, pattern)
+    if not files:
+        raise ValueError("没有找到可合成视频的图片序列。")
+
+    fps = clamp_float(settings.get("frames_fps", 24.0), 24.0, 0.1, 240.0)
+    output_base = normalize_output_path(settings.get("frames_output") or "output/sequence_video.mp4")
+    frames_ext = settings.get("frames_ext") or output_base.suffix or ".mp4"
+    if not str(frames_ext).startswith("."):
+        frames_ext = "." + str(frames_ext)
+    output_base = output_base.with_suffix(str(frames_ext))
+    output = unique_output_file(output_base)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    job.log(f"实际输出视频：{output}")
+    job.log(f"开始合成序列帧视频：{len(files)} 张，FPS {fps:g}。")
+
+    first = read_image(files[0])
+    h, w = first.shape[:2]
+    writer = ensure_video_writer(None, output, fps, (h, w), job)
+    try:
+        for index, path in enumerate(files, start=1):
+            if job.cancel_event.is_set():
+                break
+            frame = read_image(path)
+            if frame.shape[:2] != (h, w):
+                frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
+            writer.write(frame)
+            report_progress(job, index, len(files), every=1)
+    finally:
+        writer.release()
+    job.log(f"已合成 {min(len(files), index if 'index' in locals() else 0)} 帧。")
+
+
+def load_frame_sequence_preview(settings):
+    files = discover_frame_sequence_files(
+        settings.get("frames_folder") or "",
+        settings.get("frames_pattern") or "*.*",
+    )
+    if not files:
+        raise ValueError("没有找到可预览的图片序列。")
+    percent = clamp_float(settings.get("preview_percent", 0.0), 0.0, 0.0, 100.0)
+    index = int(round((percent / 100.0) * (len(files) - 1)))
+    return read_image(files[max(0, min(index, len(files) - 1))])
+
+
 def load_preview_pair(task, settings):
     percent = float(settings.get("preview_percent", 0.0))
     seconds = float(settings.get("preview_seconds", 0.0) or 0.0)
@@ -1299,6 +1364,13 @@ def validate_start_payload(task, settings):
         if not settings.get("photo_output"):
             raise ValueError("请选择输出照片路径。")
         return convert_photo_worker
+
+    if task == "frames_video":
+        if not settings.get("frames_folder"):
+            raise ValueError("请选择图片序列文件夹。")
+        if not settings.get("frames_output"):
+            raise ValueError("请选择输出视频基准。")
+        return convert_frames_video_worker
 
     raise ValueError("未知任务类型。")
 
@@ -1574,7 +1646,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .tabs {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       border-bottom: 1px solid var(--line);
       background: var(--panel-2);
       border-radius: 8px 8px 0 0;
@@ -1845,6 +1917,7 @@ INDEX_HTML = r"""<!doctype html>
         <nav class="tabs">
           <button class="tab-button active" data-tab="video">视频模式</button>
           <button class="tab-button" data-tab="sequence">图片序列</button>
+          <button class="tab-button" data-tab="frames_video">序列转视频</button>
           <button class="tab-button" data-tab="photo">单张照片</button>
         </nav>
 
@@ -1945,6 +2018,38 @@ INDEX_HTML = r"""<!doctype html>
             <button id="openSequenceOutput">打开输出文件夹</button>
           </div>
           <div class="badge">每次导出都会创建独立序列文件夹，避免覆盖旧序列。</div>
+        </div>
+
+        <div class="tab-panel" id="tab-frames_video">
+          <p class="section-title">序列帧合成视频</p>
+          <div class="grid">
+            <label for="framesFolder">图片文件夹</label>
+            <input id="framesFolder" type="text">
+            <button data-pick="folder" data-target="framesFolder">浏览</button>
+          </div>
+          <div class="compact-row">
+            <label for="framesPattern">图片过滤</label>
+            <input id="framesPattern" type="text" value="*.*">
+            <label for="framesFps">帧率 FPS</label>
+            <input id="framesFps" type="number" min="0.1" max="240" step="0.1" value="24">
+            <select id="framesExt">
+              <option value=".mp4">MP4</option>
+              <option value=".avi">AVI</option>
+              <option value=".mov">MOV</option>
+            </select>
+          </div>
+          <div class="grid">
+            <label for="framesOutput">输出视频基准</label>
+            <input id="framesOutput" type="text" value="output\\sequence_video.mp4">
+            <button data-pick="save_video" data-target="framesOutput">浏览</button>
+          </div>
+          <div class="button-row">
+            <button id="scanFrames">扫描帧序列</button>
+            <button id="previewFrames">刷新预览</button>
+            <button class="primary" id="startFramesVideo">开始合成视频</button>
+            <button id="openFramesOutput">打开输出文件夹</button>
+          </div>
+          <div class="badge">按文件名自然排序合成视频，例如 1、2、10 会按正确顺序排列。</div>
         </div>
 
         <div class="tab-panel" id="tab-photo">
@@ -2140,10 +2245,10 @@ INDEX_HTML = r"""<!doctype html>
         $("previewPercentNum").value = Number($("previewPercent").value || 0).toFixed(1);
         $("timelineReadout").textContent = `${formatTime($("previewPercent").value)} / ${formatTime(videoDuration)}`;
         $("previewPositionLabel").textContent = "视频时间轴";
-      } else if (activeTab === "sequence") {
+      } else if (activeTab === "sequence" || activeTab === "frames_video") {
         $("previewPercentNum").value = Math.round(Number($("previewPercent").value || 0));
-        $("timelineReadout").textContent = `序列位置 ${Math.round(Number($("previewPercent").value || 0))}%`;
-        $("previewPositionLabel").textContent = "序列位置";
+        $("timelineReadout").textContent = `${activeTab === "frames_video" ? "帧序列位置" : "序列位置"} ${Math.round(Number($("previewPercent").value || 0))}%`;
+        $("previewPositionLabel").textContent = activeTab === "frames_video" ? "帧序列位置" : "序列位置";
       } else {
         $("previewPercentNum").value = "0";
         $("timelineReadout").textContent = "单张照片预览";
@@ -2185,6 +2290,11 @@ INDEX_HTML = r"""<!doctype html>
         sequence_left_pattern: $("sequenceLeftPattern").value.trim(),
         sequence_right_pattern: $("sequenceRightPattern").value.trim(),
         sequence_ext: $("sequenceExt").value,
+        frames_folder: $("framesFolder").value.trim(),
+        frames_pattern: $("framesPattern").value.trim(),
+        frames_fps: Number($("framesFps").value || 24),
+        frames_ext: $("framesExt").value,
+        frames_output: $("framesOutput").value.trim(),
         photo_mode: $("photoMode").value,
         photo_left: $("photoLeft").value.trim(),
         photo_right: $("photoRight").value.trim(),
@@ -2296,6 +2406,18 @@ INDEX_HTML = r"""<!doctype html>
           const lines = result.sample.map((item) => `${item.key}: ${item.left} | ${item.right}`);
           $("log").textContent = `序列配对预览：\n${lines.join("\n")}`;
         }
+        schedulePreview();
+      } catch (error) {
+        alert(error.message);
+      }
+    }
+
+    async function scanFrames() {
+      try {
+        const result = await apiJson("/api/frame-count", {settings: collectSettings()});
+        $("progressText").textContent = `找到 ${result.count} 张图片，约 ${formatTime(result.duration)}，FPS ${result.fps}`;
+        const lines = [`第一帧：${result.first}`, `最后一帧：${result.last}`].concat(result.sample || []);
+        $("log").textContent = `序列帧扫描结果：\n${lines.join("\n")}`;
         schedulePreview();
       } catch (error) {
         alert(error.message);
@@ -2444,12 +2566,22 @@ INDEX_HTML = r"""<!doctype html>
     $("previewPhoto").addEventListener("click", refreshPreview);
     $("startVideo").addEventListener("click", () => startTask("video"));
     $("startSequence").addEventListener("click", () => startTask("sequence"));
+    $("startFramesVideo").addEventListener("click", () => startTask("frames_video"));
     $("startPhoto").addEventListener("click", () => startTask("photo"));
     $("scanSequence").addEventListener("click", scanSequence);
+    $("scanFrames").addEventListener("click", scanFrames);
     $("cancelTask").addEventListener("click", cancelTask);
     $("openVideoOutput").addEventListener("click", () => openOutput($("videoOutput").value.trim()));
     $("openSequenceOutput").addEventListener("click", () => openOutput($("sequenceOutput").value.trim()));
+    $("openFramesOutput").addEventListener("click", () => openOutput($("framesOutput").value.trim()));
     $("openPhotoOutput").addEventListener("click", () => openOutput($("photoOutput").value.trim()));
+    $("previewFrames").addEventListener("click", refreshPreview);
+    $("framesExt").addEventListener("change", () => {
+      const value = $("framesOutput").value.trim();
+      if (value) {
+        $("framesOutput").value = value.replace(/\.[^.\\\/]+$/, "") + $("framesExt").value;
+      }
+    });
     $("refreshHardware").addEventListener("click", refreshHardware);
     $("searchPapers").addEventListener("click", searchPapers);
 
@@ -2515,6 +2647,9 @@ class AppHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/sequence-count":
                 self.handle_sequence_count()
                 return
+            if parsed.path == "/api/frame-count":
+                self.handle_frame_count()
+                return
             if parsed.path == "/api/media-info":
                 self.handle_media_info()
                 return
@@ -2554,6 +2689,14 @@ class AppHandler(BaseHTTPRequestHandler):
         payload = self.read_json()
         task = payload.get("task")
         settings = payload.get("settings") or {}
+        if task == "frames_video":
+            image = load_frame_sequence_preview(settings)
+            image = fit_preview(image)
+            ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            if not ok:
+                raise ValueError("无法生成预览图。")
+            self.send_bytes(encoded.tobytes(), "image/jpeg")
+            return
         left, right = load_preview_pair(task, settings)
         image = process_anaglyph(left, right, settings)
         image = fit_preview(image)
@@ -2586,6 +2729,28 @@ class AppHandler(BaseHTTPRequestHandler):
             for key, left, right in pairs[:5]
         ]
         self.send_json({"ok": True, "count": len(pairs), "sample": sample})
+
+    def handle_frame_count(self):
+        payload = self.read_json()
+        settings = payload.get("settings") or {}
+        files = discover_frame_sequence_files(
+            settings.get("frames_folder") or "",
+            settings.get("frames_pattern") or "*.*",
+        )
+        if not files:
+            raise ValueError("没有找到可合成视频的图片序列。")
+        fps = clamp_float(settings.get("frames_fps", 24.0), 24.0, 0.1, 240.0)
+        self.send_json(
+            {
+                "ok": True,
+                "count": len(files),
+                "fps": fps,
+                "duration": len(files) / fps if fps > 0 else 0,
+                "first": str(files[0]),
+                "last": str(files[-1]),
+                "sample": [str(path) for path in files[:5]],
+            }
+        )
 
     def handle_media_info(self):
         payload = self.read_json()
